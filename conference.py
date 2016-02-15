@@ -30,13 +30,23 @@ from models import Profile
 from models import ProfileMiniForm
 from models import ProfileForm
 from models import TeeShirtSize
-
+from models import Conference
+from models import ConferenceForm
 from settings import WEB_CLIENT_ID
+
+import utils
 
 EMAIL_SCOPE = endpoints.EMAIL_SCOPE
 API_EXPLORER_CLIENT_ID = endpoints.API_EXPLORER_CLIENT_ID
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+DEFAULTS = {
+    "city" : "Default City",
+    "maxAttendees" : 0,
+    "seatsAvailable": 0,
+    "topics": ["Default", "Topic"],
+}
 
 @endpoints.api( name='conference',
                 version='v1',
@@ -70,18 +80,20 @@ class ConferenceApi(remote.Service):
         user = endpoints.get_current_user()
         if not user:
             raise endpoints.UnauthorizedException('Authorization Required')
-        profile = None
-        ## step 2: create a new Profile from logged in user data
-        ## you can use user.nickname() to get displayName
-        ## and user.email() to get mainEmail
+        
+        user_id =  utils.getUserId(user)
+        p_key = ndb.Key(Profile, user_id)
+        profile = p_key.get()
+        
         if not profile:
             profile = Profile(
-                userId = None,
-                key = None,
+                userId = user_id,
+                key = p_key,
                 displayName = user.nickname(), 
                 mainEmail= user.email(),
                 teeShirtSize = str(TeeShirtSize.NOT_SPECIFIED),
             )
+            profile.put()
 
         return profile      # return Profile
 
@@ -98,10 +110,63 @@ class ConferenceApi(remote.Service):
                     val = getattr(save_request, field)
                     if val:
                         setattr(prof, field, str(val))
+            prof.displayName = save_request.displayName
+            prof.teeShirtSize = str(save_request.teeShirtSize)
+            prof.put()
 
-        # return ProfileForm
         return self._copyProfileToForm(prof)
 
+
+    def _copyConferenceToForm(self, conf, displayName):
+        cf = ConferenceForm()
+        for field in cf.all_fields():
+            if hasattr(conf, field.name):
+                if(field.name.startsWith("Date")):
+                    setattr(cf, field.name, str(getattr(conf, field.name)))
+                else:
+                    setattr(cf, field.name, getattr(conf, field.name))
+            elif field.name == "websafeKey":
+                setattr(cf, field.name, conf.key.urlsafe())
+        if displayName:
+            setattr(cf, 'organizerDisplayName', displayName)
+        cf.check_initialized()
+        return cf
+
+    def _createConferenceObject(self, request):
+        user = endpoints.get_current_user()
+        if not user:
+            raise enpoints.UnauthorizedException("Authorization required.")
+        user_id = utils.getUserId(user)
+        data = {field.name : getattr(request, field.name) for field in request.all_fields()}
+        del data['websafekey']
+        del data['organizerDisplayName']
+
+        for df in DEFAULTS:
+            if data[df] in (None, []):
+                data[df] = DEFAULTS[df]
+                setattr(request, df, DEFAULTS[df])
+
+        if data['startDate']:
+            data['startDate'] = datetime.strptime(data['startDate'][:10], "%Y-%m-%d").date()
+            data['month'] = data['startDate'].month
+        else:
+            data['month'] = 0
+        if data['endDate']:
+            data['endDate'] = datetime.strptime(data['endDate'][:10], "%Y-%m-%d").date()
+        if data["maxAttendees"] > 0:
+            data["seatsAvailable"] = data["maxAttendees"]
+            setattr(request, "seatsAvailable", data["maxAttendees"])
+
+        #make Profile key from user id
+        p_key = ndb.Key(Profile, user_id)
+        c_id = Conference.allocate_ids(size=1, parent=p_key)[0]
+
+        c_key = ndb.Key(Conference, c_id, parent=p_key)
+        data['key'] = c_key
+        data['organizerUserId'] = request.organizerUserId = user_id
+
+        Conference(**data).put()
+        return request
 
     @endpoints.method(message_types.VoidMessage, ProfileForm,
             path='profile', http_method='GET', name='getProfile')
@@ -112,11 +177,18 @@ class ConferenceApi(remote.Service):
     # TODO 1
     # 1. change request class
     # 2. pass request to _doProfile function
-    @endpoints.method(message_types.VoidMessage, ProfileForm,
+    @endpoints.method(ProfileMiniForm, ProfileForm,
             path='profile', http_method='POST', name='saveProfile')
     def saveProfile(self, request):
         """Update & return user profile."""
-        return self._doProfile()
+        return self._doProfile(request)
+
+    @endpoints.method(ConferenceForm, ConferenceForm. path="conference", 
+            http_method="POST", name="createConference")
+
+    def createConference(self, request):
+        """Creates conferences for users."""
+        return self._createConferenceObject(self, request)
 
 
 # registers API

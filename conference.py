@@ -135,17 +135,24 @@ class ConferenceApi(remote.Service):
     def _createConferenceObject(self, request):
         user = endpoints.get_current_user()
         if not user:
-            raise enpoints.UnauthorizedException("Authorization required.")
+            raise endpoints.UnauthorizedException('Authorization required')
         user_id = utils.getUserId(user)
-        data = {field.name : getattr(request, field.name) for field in request.all_fields()}
-        del data['websafekey']
+
+        if not request.name:
+            raise endpoints.BadRequestException("Conference 'name' field required")
+
+        # copy ConferenceForm/ProtoRPC Message into dict
+        data = {field.name: getattr(request, field.name) for field in request.all_fields()}
+        del data['websafeKey']
         del data['organizerDisplayName']
 
+        # add default values for those missing (both data model & outbound Message)
         for df in DEFAULTS:
             if data[df] in (None, []):
                 data[df] = DEFAULTS[df]
                 setattr(request, df, DEFAULTS[df])
 
+        # convert dates from strings to Date objects; set month based on start_date
         if data['startDate']:
             data['startDate'] = datetime.strptime(data['startDate'][:10], "%Y-%m-%d").date()
             data['month'] = data['startDate'].month
@@ -153,19 +160,25 @@ class ConferenceApi(remote.Service):
             data['month'] = 0
         if data['endDate']:
             data['endDate'] = datetime.strptime(data['endDate'][:10], "%Y-%m-%d").date()
+
+        # set seatsAvailable to be same as maxAttendees on creation
         if data["maxAttendees"] > 0:
             data["seatsAvailable"] = data["maxAttendees"]
-            setattr(request, "seatsAvailable", data["maxAttendees"])
-
-        #make Profile key from user id
+        # generate Profile Key based on user ID and Conference
+        # ID based on Profile key get Conference key from ID
         p_key = ndb.Key(Profile, user_id)
         c_id = Conference.allocate_ids(size=1, parent=p_key)[0]
-
         c_key = ndb.Key(Conference, c_id, parent=p_key)
         data['key'] = c_key
         data['organizerUserId'] = request.organizerUserId = user_id
 
+        # create Conference, send email to organizer confirming
+        # creation of Conference & return (modified) ConferenceForm
         Conference(**data).put()
+        taskqueue.add(params={'email': user.email(),
+            'conferenceInfo': repr(request)},
+            url='/tasks/send_confirmation_email'
+        )
         return request
 
     @endpoints.method(message_types.VoidMessage, ProfileForm,
@@ -188,7 +201,18 @@ class ConferenceApi(remote.Service):
 
     def createConference(self, request):
         """Creates conferences for users."""
-        return self._createConferenceObject(self, request)
+        return self._createConferenceObject(request)
+
+    @endpoints.method(ConferenceQueryForms, ConferenceForms, path="queryConferences",
+            http_method="POST", name="queryConferences")
+
+    def queryConferences(self, request):
+        """Queries conferences for results."""
+        conferences = Conference.query()
+
+        return ConferenceForms(
+            items = [self._copyConferenceToForm(conf, "")\
+            for conf in conferences])
 
 
 # registers API

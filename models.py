@@ -85,4 +85,14 @@ class ConferenceForm(messages.Message):
     websafeKey      = messages.StringField(11)
     organizerDisplayName = messages.StringField(12)
 
+class ConferenceForms(messages.Message):
+    """ConferenceForms -- """
+
+    item = messages.MessageField(ConferenceForm, 1, repeated = true);
+
+class ConferenceQueryForms(messages.Message):
+    """asd"""
+    field = message.StringField(1)
+    operator = message.StringField(2)
+    value = message.StringField(3)
 
